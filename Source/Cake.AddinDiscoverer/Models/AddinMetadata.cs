@@ -76,7 +76,7 @@ namespace Cake.AddinDiscoverer.Models
 
 		public bool SourceLinkEnabled { get; set; }
 
-		public bool XmlDocumentationAvailable { get; set; }
+		public string XmlDocumentationFilePath { get; set; }
 
 		public MethodInfo[] DecoratedMethods { get; set; }
 
