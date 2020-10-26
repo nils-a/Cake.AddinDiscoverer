@@ -1,7 +1,6 @@
 using Cake.AddinDiscoverer.Models;
 using Cake.AddinDiscoverer.Utilities;
 using Cake.Incubator.StringExtensions;
-using NuGet.Packaging;
 using NuGet.Packaging.Core;
 using System;
 using System.Collections.Generic;
@@ -31,27 +30,24 @@ namespace Cake.AddinDiscoverer.Steps
 				{
 					try
 					{
-						var packageFileName = Path.Combine(context.PackagesFolder, $"{addin.Name}.{addin.NuGetPackageVersion}.nupkg");
-						if (File.Exists(packageFileName))
+						if (addin.NuGetPackage != null)
 						{
-							using var packageStream = File.Open(packageFileName, System.IO.FileMode.Open, FileAccess.Read, FileShare.Read);
-							using var package = new PackageArchiveReader(packageStream);
 							/*
 							Workaround to get all available metadata from a NuGet package, even the metadata not
 							exposed by NuGet.Packaging.NuspecReader. For example, NuspecReader version 4.3.0 does
 							not expose the "repository" metadata.
 							*/
-							var metadataNode = package.NuspecReader.Xml.Root.Elements()
+							var metadataNode = addin.NuGetPackage.NuspecReader.Xml.Root.Elements()
 								.Single(e => e.Name.LocalName.Equals("metadata", StringComparison.Ordinal));
 							var rawNugetMetadata = metadataNode.Elements()
 								.ToDictionary(
 									e => e.Name.LocalName,
 									e => (e.Value, (IDictionary<string, string>)e.Attributes().ToDictionary(a => a.Name.LocalName, a => a.Value)));
 
-							var license = package.NuspecReader.GetMetadataValue("license");
-							var iconUrl = package.NuspecReader.GetIconUrl();
-							var projectUrl = package.NuspecReader.GetProjectUrl();
-							var packageVersion = package.NuspecReader.GetVersion().ToNormalizedString();
+							var license = addin.NuGetPackage.NuspecReader.GetMetadataValue("license");
+							var iconUrl = addin.NuGetPackage.NuspecReader.GetIconUrl();
+							var projectUrl = addin.NuGetPackage.NuspecReader.GetProjectUrl();
+							var packageVersion = addin.NuGetPackage.NuspecReader.GetVersion().ToNormalizedString();
 
 							// Only get TFM for lib folder. If there are other TFM used for other folders (tool, content, build, ...) we're not interested in it.
 							// Also filter out the "any" platform which is used when the platform is unknown
@@ -81,7 +77,7 @@ namespace Cake.AddinDiscoverer.Steps
 								.ToArray();
 
 #pragma warning disable SA1009 // Closing parenthesis should be spaced correctly
-							var assembliesPath = package.GetFiles()
+							var assembliesPath = addin.NuGetPackage.GetFiles()
 								.Where(f =>
 									Path.GetExtension(f).EqualsIgnoreCase(".dll") &&
 									!Path.GetFileNameWithoutExtension(f).EqualsIgnoreCase("Cake.Core") &&
@@ -106,7 +102,7 @@ namespace Cake.AddinDiscoverer.Steps
 
 							//--------------------------------------------------
 							// Find the first DLL that contains Cake alias attributes (i.e.: 'CakePropertyAlias' or 'CakeMethodAlias')
-							var assemblyInfoToAnalyze = FindAssemblyToAnalyze(package, assembliesPath);
+							var assemblyInfoToAnalyze = FindAssemblyToAnalyze(addin.NuGetPackage, assembliesPath);
 
 							//--------------------------------------------------
 							// Determine the type of the nuget package
@@ -138,7 +134,7 @@ namespace Cake.AddinDiscoverer.Steps
 							// First, check if the PDB is included in the nupkg
 							try
 							{
-								var pdbFileInNupkg = package.GetFiles()
+								var pdbFileInNupkg = addin.NuGetPackage.GetFiles()
 									.FirstOrDefault(f =>
 										Path.GetExtension(f).EqualsIgnoreCase(".pdb") &&
 										Path.GetFileNameWithoutExtension(f).EqualsIgnoreCase(addin.Name));
@@ -147,7 +143,7 @@ namespace Cake.AddinDiscoverer.Steps
 								{
 									addin.PdbStatus = PdbStatus.IncludedInPackage;
 
-									var pdbStream = package.GetStream(pdbFileInNupkg);
+									var pdbStream = addin.NuGetPackage.LoadFile(pdbFileInNupkg);
 									addin.SourceLinkEnabled = HasSourceLinkDebugInformation(pdbStream);
 								}
 							}
@@ -185,13 +181,9 @@ namespace Cake.AddinDiscoverer.Steps
 							{
 								try
 								{
-									var symbolsFileName = Path.Combine(context.PackagesFolder, $"{addin.Name}.{addin.NuGetPackageVersion}.snupkg");
-									if (File.Exists(symbolsFileName))
+									if (addin.SymbolsPackage != null)
 									{
-										using var symbolsStream = File.Open(symbolsFileName, System.IO.FileMode.Open, FileAccess.Read, FileShare.Read);
-										using var symbolsPackage = new PackageArchiveReader(symbolsStream);
-
-										var pdbFileInSnupkg = symbolsPackage.GetFiles()
+										var pdbFileInSnupkg = addin.SymbolsPackage.GetFiles()
 											.FirstOrDefault(f =>
 												Path.GetExtension(f).EqualsIgnoreCase(".pdb") &&
 												Path.GetFileNameWithoutExtension(f).EqualsIgnoreCase(addin.Name));
@@ -200,7 +192,7 @@ namespace Cake.AddinDiscoverer.Steps
 										{
 											addin.PdbStatus = PdbStatus.IncludedInSymbolsPackage;
 
-											var pdbStream = package.GetStream(pdbFileInSnupkg);
+											var pdbStream = addin.NuGetPackage.LoadFile(pdbFileInSnupkg);
 											addin.SourceLinkEnabled = HasSourceLinkDebugInformation(pdbStream);
 										}
 									}
@@ -214,7 +206,7 @@ namespace Cake.AddinDiscoverer.Steps
 							//--------------------------------------------------
 							// Find the XML documentation
 							var assemblyFolder = Path.GetDirectoryName(assemblyInfoToAnalyze.AssemblyPath);
-							var xmlDocumentation = package.GetFiles()
+							var xmlDocumentation = addin.NuGetPackage.GetFiles()
 								.FirstOrDefault(f =>
 									Path.GetExtension(f).EqualsIgnoreCase(".xml") &&
 									Path.GetFileNameWithoutExtension(f).EqualsIgnoreCase(addin.Name) &&
@@ -268,7 +260,7 @@ namespace Cake.AddinDiscoverer.Steps
 							{
 								try
 								{
-									using var iconFileContent = LoadFileFromPackage(package, iconInfo.Value);
+									using var iconFileContent = addin.NuGetPackage.LoadFile(iconInfo.Value);
 									addin.EmbeddedIcon = iconFileContent.ToArray();
 								}
 								catch
@@ -295,40 +287,8 @@ namespace Cake.AddinDiscoverer.Steps
 			await Task.Delay(1).ConfigureAwait(false);
 		}
 
-		private static MemoryStream LoadFileFromPackage(IPackageCoreReader package, string filePath)
-		{
-			try
-			{
-				var cleanPath = filePath.Replace('/', '\\');
-				if (cleanPath.IndexOf('%') > -1)
-				{
-					cleanPath = Uri.UnescapeDataString(cleanPath);
-				}
-
-				using var fileStream = package.GetStream(cleanPath);
-				var decompressedStream = new MemoryStream();
-				fileStream.CopyTo(decompressedStream);
-				decompressedStream.Position = 0;
-				return decompressedStream;
-			}
-			catch (FileLoadException e)
-			{
-				// Note: intentionally discarding the original exception because I want to ensure the following message is displayed in the 'Exceptions' report
-				throw new FileLoadException($"An error occured while loading {Path.GetFileName(filePath)} from the Nuget package. {e.Message}");
-			}
-		}
-
 		private bool HasSourceLinkDebugInformation(Stream pdbStream)
 		{
-			if (!pdbStream.CanSeek)
-			{
-				using var seekablePdbStream = new MemoryStream();
-				pdbStream.CopyTo(seekablePdbStream);
-				seekablePdbStream.Position = 0;
-
-				return HasSourceLinkDebugInformation(seekablePdbStream);
-			}
-
 			using var pdbReaderProvider = MetadataReaderProvider.FromPortablePdbStream(pdbStream);
 			var pdbReader = pdbReaderProvider.GetMetadataReader();
 
@@ -367,7 +327,7 @@ namespace Cake.AddinDiscoverer.Steps
 				var loadContext = new MetadataLoadContext(assemblyResolver);
 
 				// Load the assembly
-				var assemblyStream = LoadFileFromPackage(package, assemblyPath);
+				var assemblyStream = package.LoadFile(assemblyPath);
 				var assembly = loadContext.LoadFromStream(assemblyStream);
 
 				// Search for decorated methods.
